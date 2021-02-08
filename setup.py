@@ -26,6 +26,7 @@ setup(
     packages=find_packages(include=['safety_gym']),
     install_requires=[
         'gym>=0.15.3',
+        'hydra-core==1.0.5',
         'joblib~=0.14.0',
         'mujoco_py==2.0.2.7',
         'numpy==1.20.0',

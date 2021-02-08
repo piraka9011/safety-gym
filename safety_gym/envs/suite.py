@@ -5,6 +5,8 @@ from string import capwords
 from gym.envs.registration import register
 import numpy as np
 
+from safety_gym.config import EngineConfig
+
 
 VERSION = 'v0'
 
@@ -71,7 +73,7 @@ class SafexpEnvBase:
             reg_config.update(config)
             register(id=env_name,
                      entry_point='safety_gym.envs.mujoco:Engine',
-                     kwargs={'config': reg_config})
+                     kwargs={'config': EngineConfig(**reg_config)})
             if MAKE_VISION_ENVIRONMENTS:
                 # Vision: note, these environments are experimental! Correct behavior not guaranteed
                 vision_env_name = f'{self.prefix}-{robot_name}{self.name + name}Vision-{VERSION}'
@@ -82,7 +84,7 @@ class SafexpEnvBase:
                 reg_config.update(vision_config)
                 register(id=vision_env_name,
                          entry_point='safety_gym.envs.mujoco:Engine',
-                         kwargs={'config': reg_config})
+                         kwargs={'config': EngineConfig(**reg_config)})
 
 
 
