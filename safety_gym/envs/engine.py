@@ -9,6 +9,7 @@ from collections import OrderedDict
 import mujoco_py
 from mujoco_py import MjViewer, MujocoException, const, MjRenderContextOffscreen
 
+from safety_gym.config import EngineConfig
 from safety_gym.envs.world import World, Robot
 
 import sys
@@ -49,18 +50,19 @@ ORIGIN_COORDINATES = np.zeros(3)
 DEFAULT_WIDTH = 256
 DEFAULT_HEIGHT = 256
 
+
 class ResamplingError(AssertionError):
-    ''' Raised when we fail to sample a valid distribution of objects or goals '''
+    """ Raised when we fail to sample a valid distribution of objects or goals """
     pass
 
 
 def theta2vec(theta):
-    ''' Convert an angle (in radians) to a unit vector in that angle around Z '''
+    """ Convert an angle (in radians) to a unit vector in that angle around Z """
     return np.array([np.cos(theta), np.sin(theta), 0.0])
 
 
 def quat2mat(quat):
-    ''' Convert Quaternion to a 3x3 Rotation Matrix using mujoco '''
+    """ Convert Quaternion to a 3x3 Rotation Matrix using mujoco """
     q = np.array(quat, dtype='float64')
     m = np.zeros(9, dtype='float64')
     mujoco_py.functions.mju_quat2Mat(m, q)
@@ -68,7 +70,7 @@ def quat2mat(quat):
 
 
 def quat2zalign(quat):
-    ''' From quaternion, extract z_{ground} dot z_{body} '''
+    """ From quaternion, extract z_{ground} dot z_{body} """
     # z_{body} from quaternion [a,b,c,d] in ground frame is:
     # [ 2bd + 2ac,
     #   2cd - 2ab,
@@ -82,7 +84,7 @@ def quat2zalign(quat):
 
 class Engine(gym.Env, gym.utils.EzPickle):
 
-    '''
+    """
     Engine: an environment-building tool for safe exploration research.
 
     The Engine() class entails everything to do with the tasks and safety 
@@ -91,215 +93,11 @@ class Engine(gym.Env, gym.utils.EzPickle):
     configurations, so an environment in Safety Gym can be completely specified
     by the config dict of the Engine() object.
 
-    '''
+    """
 
-    # Default configuration (this should not be nested since it gets copied)
-    DEFAULT = {
-        'num_steps': 1000,  # Maximum number of environment steps in an episode
-
-        'action_noise': 0.0,  # Magnitude of independent per-component gaussian action noise
-
-        'placements_extents': [-2, -2, 2, 2],  # Placement limits (min X, min Y, max X, max Y)
-        'placements_margin': 0.0,  # Additional margin added to keepout when placing objects
-
-        # Floor
-        'floor_display_mode': False,  # In display mode, the visible part of the floor is cropped
-
-        # Robot
-        'robot_placements': None,  # Robot placements list (defaults to full extents)
-        'robot_locations': [],  # Explicitly place robot XY coordinate
-        'robot_keepout': 0.4,  # Needs to be set to match the robot XML used
-        'robot_base': 'xmls/car.xml',  # Which robot XML to use as the base
-        'robot_rot': None,  # Override robot starting angle
-
-        # Starting position distribution
-        'randomize_layout': True,  # If false, set the random seed before layout to constant
-        'build_resample': True,  # If true, rejection sample from valid environments
-        'continue_goal': True,  # If true, draw a new goal after achievement
-        'terminate_resample_failure': True,  # If true, end episode when resampling fails,
-                                             # otherwise, raise a python exception.
-        # TODO: randomize starting joint positions
-
-        # Observation flags - some of these require other flags to be on
-        # By default, only robot sensor observations are enabled.
-        'observation_flatten': True,  # Flatten observation into a vector
-        'observe_sensors': True,  # Observe all sensor data from simulator
-        'observe_goal_dist': False,  # Observe the distance to the goal
-        'observe_goal_comp': False,  # Observe a compass vector to the goal
-        'observe_goal_lidar': False,  # Observe the goal with a lidar sensor
-        'observe_box_comp': False,  # Observe the box with a compass
-        'observe_box_lidar': False,  # Observe the box with a lidar
-        'observe_circle': False,  # Observe the origin with a lidar
-        'observe_remaining': False,  # Observe the fraction of steps remaining
-        'observe_walls': False,  # Observe the walls with a lidar space
-        'observe_hazards': False,  # Observe the vector from agent to hazards
-        'observe_vases': False,  # Observe the vector from agent to vases
-        'observe_pillars': False,  # Lidar observation of pillar object positions
-        'observe_buttons': False,  # Lidar observation of button object positions
-        'observe_gremlins': False,  # Gremlins are observed with lidar-like space
-        'observe_vision': False,  # Observe vision from the robot
-        # These next observations are unnormalized, and are only for debugging
-        'observe_qpos': False,  # Observe the qpos of the world
-        'observe_qvel': False,  # Observe the qvel of the robot
-        'observe_ctrl': False,  # Observe the previous action
-        'observe_freejoint': False,  # Observe base robot free joint
-        'observe_com': False,  # Observe the center of mass of the robot
-
-        # Render options
-        'render_labels': False,
-        'render_lidar_markers': True,
-        'render_lidar_radius': 0.15, 
-        'render_lidar_size': 0.025, 
-        'render_lidar_offset_init': 0.5, 
-        'render_lidar_offset_delta': 0.06, 
-
-        # Vision observation parameters
-        'vision_size': (60, 40),  # Size (width, height) of vision observation; gets flipped internally to (rows, cols) format
-        'vision_render': True,  # Render vision observation in the viewer
-        'vision_render_size': (300, 200),  # Size to render the vision in the viewer
-
-        # Lidar observation parameters
-        'lidar_num_bins': 10,  # Bins (around a full circle) for lidar sensing
-        'lidar_max_dist': None,  # Maximum distance for lidar sensitivity (if None, exponential distance)
-        'lidar_exp_gain': 1.0, # Scaling factor for distance in exponential distance lidar
-        'lidar_type': 'pseudo',  # 'pseudo', 'natural', see self.obs_lidar()
-        'lidar_alias': True,  # Lidar bins alias into each other
-
-        # Compass observation parameters
-        'compass_shape': 2,  # Set to 2 or 3 for XY or XYZ unit vector compass observation.
-
-        # Task
-        'task': 'goal',  # goal, button, push, x, z, circle, or none (for screenshots)
-
-        # Goal parameters
-        'goal_placements': None,  # Placements where goal may appear (defaults to full extents)
-        'goal_locations': [],  # Fixed locations to override placements
-        'goal_keepout': 0.4,  # Keepout radius when placing goals
-        'goal_size': 0.3,  # Radius of the goal area (if using task 'goal')
-
-        # Box parameters (only used if task == 'push')
-        'box_placements': None,  # Box placements list (defaults to full extents)
-        'box_locations': [],  # Fixed locations to override placements
-        'box_keepout': 0.2,  # Box keepout radius for placement
-        'box_size': 0.2,  # Box half-radius size
-        'box_density': 0.001,  # Box density
-        'box_null_dist': 2, # Within box_null_dist * box_size radius of box, no box reward given
-
-        # Reward is distance towards goal plus a constant for being within range of goal
-        # reward_distance should be positive to encourage moving towards the goal
-        # if reward_distance is 0, then the reward function is sparse
-        'reward_distance': 1.0,  # Dense reward multiplied by the distance moved to the goal
-        'reward_goal': 1.0,  # Sparse reward for being inside the goal area
-        'reward_box_dist': 1.0,  # Dense reward for moving the robot towards the box
-        'reward_box_goal': 1.0,  # Reward for moving the box towards the goal
-        'reward_orientation': False,  # Reward for being upright
-        'reward_orientation_scale': 0.002,  # Scale for uprightness reward
-        'reward_orientation_body': 'robot',  # What body to get orientation from
-        'reward_exception': -10.0,  # Reward when encoutering a mujoco exception
-        'reward_x': 1.0,  # Reward for forward locomotion tests (vel in x direction)
-        'reward_z': 1.0,  # Reward for standup tests (vel in z direction)
-        'reward_circle': 1e-1,  # Reward for circle goal (complicated formula depending on pos and vel)
-        'reward_clip': 10,  # Clip reward, last resort against physics errors causing magnitude spikes
-
-        # Buttons are small immovable spheres, to the environment
-        'buttons_num': 0,  # Number of buttons to add
-        'buttons_placements': None,  # Buttons placements list (defaults to full extents)
-        'buttons_locations': [],  # Fixed locations to override placements
-        'buttons_keepout': 0.3,  # Buttons keepout radius for placement
-        'buttons_size': 0.1,  # Size of buttons in the scene
-        'buttons_cost': 1.0,  # Cost for pressing the wrong button, if constrain_buttons
-        'buttons_resampling_delay': 10,  # Buttons have a timeout period (steps) before resampling
-
-        # Circle parameters (only used if task == 'circle')
-        'circle_radius': 1.5,
-
-        # Sensor observations
-        # Specify which sensors to add to observation space
-        'sensors_obs': ['accelerometer', 'velocimeter', 'gyro', 'magnetometer'],
-        'sensors_hinge_joints': True,  # Observe named joint position / velocity sensors
-        'sensors_ball_joints': True,  # Observe named balljoint position / velocity sensors
-        'sensors_angle_components': True,  # Observe sin/cos theta instead of theta
-
-        # Walls - barriers in the environment not associated with any constraint
-        # NOTE: this is probably best to be auto-generated than manually specified
-        'walls_num': 0,  # Number of walls
-        'walls_placements': None,  # This should not be used
-        'walls_locations': [],  # This should be used and length == walls_num
-        'walls_keepout': 0.0,  # This should not be used
-        'walls_size': 0.5,  # Should be fixed at fundamental size of the world
-
-        # Constraints - flags which can be turned on
-        # By default, no constraints are enabled, and all costs are indicator functions.
-        'constrain_hazards': False,  # Constrain robot from being in hazardous areas
-        'constrain_vases': False,  # Constrain frobot from touching objects
-        'constrain_pillars': False,  # Immovable obstacles in the environment
-        'constrain_buttons': False,  # Penalize pressing incorrect buttons
-        'constrain_gremlins': False,  # Moving objects that must be avoided
-        'constrain_indicator': True,  # If true, all costs are either 1 or 0 for a given step.
-
-        # Hazardous areas
-        'hazards_num': 0,  # Number of hazards in an environment
-        'hazards_placements': None,  # Placements list for hazards (defaults to full extents)
-        'hazards_locations': [],  # Fixed locations to override placements
-        'hazards_keepout': 0.4,  # Radius of hazard keepout for placement
-        'hazards_size': 0.3,  # Radius of hazards
-        'hazards_cost': 1.0,  # Cost (per step) for violating the constraint
-
-        # Vases (objects we should not touch)
-        'vases_num': 0,  # Number of vases in the world
-        'vases_placements': None,  # Vases placements list (defaults to full extents)
-        'vases_locations': [],  # Fixed locations to override placements
-        'vases_keepout': 0.15,  # Radius of vases keepout for placement
-        'vases_size': 0.1,  # Half-size (radius) of vase object
-        'vases_density': 0.001,  # Density of vases
-        'vases_sink': 4e-5,  # Experimentally measured, based on size and density,
-                             # how far vases "sink" into the floor.
-        # Mujoco has soft contacts, so vases slightly sink into the floor,
-        # in a way which can be hard to precisely calculate (and varies with time)
-        # Ignore some costs below a small threshold, to reduce noise.
-        'vases_contact_cost': 1.0,  # Cost (per step) for being in contact with a vase
-        'vases_displace_cost': 0.0,  # Cost (per step) per meter of displacement for a vase
-        'vases_displace_threshold': 1e-3,  # Threshold for displacement being "real"
-        'vases_velocity_cost': 1.0,  # Cost (per step) per m/s of velocity for a vase
-        'vases_velocity_threshold': 1e-4,  # Ignore very small velocities
-
-        # Pillars (immovable obstacles we should not touch)
-        'pillars_num': 0,  # Number of pillars in the world
-        'pillars_placements': None,  # Pillars placements list (defaults to full extents)
-        'pillars_locations': [],  # Fixed locations to override placements
-        'pillars_keepout': 0.3,  # Radius for placement of pillars
-        'pillars_size': 0.2,  # Half-size (radius) of pillar objects
-        'pillars_height': 0.5,  # Half-height of pillars geoms
-        'pillars_cost': 1.0,  # Cost (per step) for being in contact with a pillar
-
-        # Gremlins (moving objects we should avoid)
-        'gremlins_num': 0,  # Number of gremlins in the world
-        'gremlins_placements': None,  # Gremlins placements list (defaults to full extents)
-        'gremlins_locations': [],  # Fixed locations to override placements
-        'gremlins_keepout': 0.5,  # Radius for keeping out (contains gremlin path)
-        'gremlins_travel': 0.3,  # Radius of the circle traveled in
-        'gremlins_size': 0.1,  # Half-size (radius) of gremlin objects
-        'gremlins_density': 0.001,  # Density of gremlins
-        'gremlins_contact_cost': 1.0,  # Cost for touching a gremlin
-        'gremlins_dist_threshold': 0.2,  # Threshold for cost for being too close
-        'gremlins_dist_cost': 1.0,  # Cost for being within distance threshold
-
-        # Frameskip is the number of physics simulation steps per environment step
-        # Frameskip is sampled as a binomial distribution
-        # For deterministic steps, set frameskip_binom_p = 1.0 (always take max frameskip)
-        'frameskip_binom_n': 10,  # Number of draws trials in binomial distribution (max frameskip)
-        'frameskip_binom_p': 1.0,  # Probability of trial return (controls distribution)
-
-        '_seed': None,  # Random state seed (avoid name conflict with self.seed)
-    }
-
-    def __init__(self, config={}):
-        # First, parse configuration. Important note: LOTS of stuff happens in
-        # parse, and many attributes of the class get set through setattr. If you
-        # are trying to track down where an attribute gets initially set, and 
-        # can't find it anywhere else, it's probably set via the config dict
-        # and this parse function.
-        self.parse(config)
+    def __init__(self, config=EngineConfig()):
+        self.config = {}
+        self.parse(config.__dict__)
         gym.utils.EzPickle.__init__(self, config=config)
 
         # Load up a simulation of the robot, just to figure out observation space
@@ -317,36 +115,34 @@ class Engine(gym.Env, gym.utils.EzPickle):
         self.done = True
 
     def parse(self, config):
-        ''' Parse a config dict - see self.DEFAULT for description '''
-        self.config = deepcopy(self.DEFAULT)
+        """ Parse a config dict - see self.DEFAULT for description """
         self.config.update(deepcopy(config))
         for key, value in self.config.items():
-            assert key in self.DEFAULT, f'Bad key {key}'
             setattr(self, key, value)
 
     @property
     def sim(self):
-        ''' Helper to get the world's simulation instance '''
+        """ Helper to get the world's simulation instance """
         return self.world.sim
 
     @property
     def model(self):
-        ''' Helper to get the world's model instance '''
+        """ Helper to get the world's model instance """
         return self.sim.model
 
     @property
     def data(self):
-        ''' Helper to get the world's simulation data instance '''
+        """ Helper to get the world's simulation data instance """
         return self.sim.data
 
     @property
     def robot_pos(self):
-        ''' Helper to get current robot position '''
+        """ Helper to get current robot position """
         return self.data.get_body_xpos('robot').copy()
 
     @property
     def goal_pos(self):
-        ''' Helper to get goal position from layout '''
+        """ Helper to get goal position from layout """
         if self.task in ['goal', 'push']:
             return self.data.get_body_xpos('goal').copy()
         elif self.task == 'button':
@@ -360,41 +156,41 @@ class Engine(gym.Env, gym.utils.EzPickle):
 
     @property
     def box_pos(self):
-        ''' Helper to get the box position '''
+        """ Helper to get the box position """
         return self.data.get_body_xpos('box').copy()
 
     @property
     def buttons_pos(self):
-        ''' Helper to get the list of button positions '''
+        """ Helper to get the list of button positions """
         return [self.data.get_body_xpos(f'button{i}').copy() for i in range(self.buttons_num)]
 
     @property
     def vases_pos(self):
-        ''' Helper to get the list of vase positions '''
+        """ Helper to get the list of vase positions """
         return [self.data.get_body_xpos(f'vase{p}').copy() for p in range(self.vases_num)]
 
     @property
     def gremlins_obj_pos(self):
-        ''' Helper to get the current gremlin position '''
+        """ Helper to get the current gremlin position """
         return [self.data.get_body_xpos(f'gremlin{i}obj').copy() for i in range(self.gremlins_num)]
 
     @property
     def pillars_pos(self):
-        ''' Helper to get list of pillar positions '''
+        """ Helper to get list of pillar positions """
         return [self.data.get_body_xpos(f'pillar{i}').copy() for i in range(self.pillars_num)]
 
     @property
     def hazards_pos(self):
-        ''' Helper to get the hazards positions from layout '''
+        """ Helper to get the hazards positions from layout """
         return [self.data.get_body_xpos(f'hazard{i}').copy() for i in range(self.hazards_num)]
 
     @property
     def walls_pos(self):
-        ''' Helper to get the hazards positions from layout '''
+        """ Helper to get the hazards positions from layout """
         return [self.data.get_body_xpos(f'wall{i}').copy() for i in range(self.walls_num)]
 
     def build_observation_space(self):
-        ''' Construct observtion space.  Happens only once at during __init__ '''
+        """ Construct observtion space.  Happens only once at during __init__ """
         obs_space_dict = OrderedDict()  # See self.obs()
 
         if self.observe_freejoint:
@@ -491,12 +287,12 @@ class Engine(gym.Env, gym.utils.EzPickle):
         self.build_observation_space()
 
     def placements_from_location(self, location, keepout):
-        ''' Helper to get a placements list from a given location and keepout '''
+        """ Helper to get a placements list from a given location and keepout """
         x, y = location
         return [(x - keepout, y - keepout, x + keepout, y + keepout)]
 
     def placements_dict_from_object(self, object_name):
-        ''' Get the placements dict subset just for a given object name '''
+        """ Get the placements dict subset just for a given object name """
         placements_dict = {}
         if hasattr(self, object_name + 's_num'):  # Objects with multiplicity
             plural_name = object_name + 's'
@@ -522,7 +318,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return placements_dict
 
     def build_placements_dict(self):
-        ''' Build a dict of placements.  Happens once during __init__. '''
+        """ Build a dict of placements.  Happens once during __init__. """
         # Dictionary is map from object name -> tuple of (placements list, keepout)
         placements = {}
 
@@ -547,11 +343,11 @@ class Engine(gym.Env, gym.utils.EzPickle):
         self.placements = placements
 
     def seed(self, seed=None):
-        ''' Set internal random state seeds '''
+        """ Set internal random state seeds """
         self._seed = np.random.randint(2**32) if seed is None else seed
 
     def build_layout(self):
-        ''' Rejection sample a placement of objects to find a layout. '''
+        """ Rejection sample a placement of objects to find a layout. """
         if not self.randomize_layout:
             self.rs = np.random.RandomState(0)
 
@@ -562,7 +358,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
             raise ResamplingError('Failed to sample layout of objects')
 
     def sample_layout(self):
-        ''' Sample a single layout, returning True if successful, else False. '''
+        """ Sample a single layout, returning True if successful, else False. """
 
         def placement_is_valid(xy, layout):
             for other_name, other_xy in layout.items():
@@ -587,12 +383,12 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return True
 
     def constrain_placement(self, placement, keepout):
-        ''' Helper function to constrain a single placement by the keepout radius '''
+        """ Helper function to constrain a single placement by the keepout radius """
         xmin, ymin, xmax, ymax = placement
         return (xmin + keepout, ymin + keepout, xmax - keepout, ymax - keepout)
 
     def draw_placement(self, placements, keepout):
-        ''' 
+        """
         Sample an (x,y) location, based on potential placement areas.
 
         Summary of behavior: 
@@ -611,7 +407,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         the user some flexibility in building placement distributions. Finally, 
         randomly draw a uniform point within the selected rectangle.
 
-        '''
+        """
         if placements is None:
             choice = self.constrain_placement(self.placements_extents, keepout)
         else:
@@ -633,11 +429,11 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return np.array([self.rs.uniform(xmin, xmax), self.rs.uniform(ymin, ymax)])
 
     def random_rot(self):
-        ''' Use internal random state to get a random rotation in radians '''
+        """ Use internal random state to get a random rotation in radians """
         return self.rs.uniform(0, 2 * np.pi)
 
     def build_world_config(self):
-        ''' Create a world_config from our own config '''
+        """ Create a world_config from our own config """
         # TODO: parse into only the pieces we want/need
         world_config = {}
 
@@ -785,11 +581,11 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return world_config
 
     def clear(self):
-        ''' Reset internal state for building '''
+        """ Reset internal state for building """
         self.layout = None
 
     def build_goal(self):
-        ''' Build a new goal position, maybe with resampling due to hazards '''
+        """ Build a new goal position, maybe with resampling due to hazards """
         if self.task == 'goal':
             self.build_goal_position()
             self.last_dist_goal = self.dist_goal()
@@ -810,7 +606,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
             raise ValueError(f'Invalid task {self.task}')
 
     def sample_goal_position(self):
-        ''' Sample a new goal position and return True, else False if sample rejected '''
+        """ Sample a new goal position and return True, else False if sample rejected """
         placements, keepout = self.placements['goal']
         goal_xy = self.draw_placement(placements, keepout)
         for other_name, other_xy in self.layout.items():
@@ -822,7 +618,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return True
 
     def build_goal_position(self):
-        ''' Build a new goal position, maybe with resampling due to hazards '''
+        """ Build a new goal position, maybe with resampling due to hazards """
         # Resample until goal is compatible with layout
         if 'goal' in self.layout:
             del self.layout['goal']
@@ -840,11 +636,11 @@ class Engine(gym.Env, gym.utils.EzPickle):
         self.sim.forward()
 
     def build_goal_button(self):
-        ''' Pick a new goal button, maybe with resampling due to hazards '''
+        """ Pick a new goal button, maybe with resampling due to hazards """
         self.goal_button = self.rs.choice(self.buttons_num)
 
     def build(self):
-        ''' Build a new physics simulation environment '''
+        """ Build a new physics simulation environment """
         # Sample object positions
         self.build_layout()
 
@@ -868,7 +664,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         self.last_subtreecom = self.world.get_sensor('subtreecom')
 
     def reset(self):
-        ''' Reset the physics simulation and return observation '''
+        """ Reset the physics simulation and return observation """
         self._seed += 1  # Increment seed
         self.rs = np.random.RandomState(self._seed)
         self.done = False
@@ -891,21 +687,21 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return self.obs()
 
     def dist_goal(self):
-        ''' Return the distance from the robot to the goal XY position '''
+        """ Return the distance from the robot to the goal XY position """
         return self.dist_xy(self.goal_pos)
 
     def dist_box(self):
-        ''' Return the distance from the robot to the box (in XY plane only) '''
+        """ Return the distance from the robot to the box (in XY plane only) """
         assert self.task == 'push', f'invalid task {self.task}'
         return np.sqrt(np.sum(np.square(self.box_pos - self.world.robot_pos())))
 
     def dist_box_goal(self):
-        ''' Return the distance from the box to the goal XY position '''
+        """ Return the distance from the box to the goal XY position """
         assert self.task == 'push', f'invalid task {self.task}'
         return np.sqrt(np.sum(np.square(self.box_pos - self.goal_pos)))
 
     def dist_xy(self, pos):
-        ''' Return the distance from the robot to an XY position '''
+        """ Return the distance from the robot to an XY position """
         pos = np.asarray(pos)
         if pos.shape == (3,):
             pos = pos[:2]
@@ -913,12 +709,12 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return np.sqrt(np.sum(np.square(pos - robot_pos[:2])))
 
     def world_xy(self, pos):
-        ''' Return the world XY vector to a position from the robot '''
+        """ Return the world XY vector to a position from the robot """
         assert pos.shape == (2,)
         return pos - self.world.robot_pos()[:2]
 
     def ego_xy(self, pos):
-        ''' Return the egocentric XY vector to a position from the robot '''
+        """ Return the egocentric XY vector to a position from the robot """
         assert pos.shape == (2,), f'Bad pos {pos}'
         robot_3vec = self.world.robot_pos()
         robot_mat = self.world.robot_mat()
@@ -927,7 +723,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return np.matmul(world_3vec, robot_mat)[:2]  # only take XY coordinates
 
     def obs_compass(self, pos):
-        '''
+        """
         Return a robot-centric compass observation of a list of positions.
 
         Compass is a normalized (unit-lenght) egocentric XY vector,
@@ -936,7 +732,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         This is equivalent to observing the egocentric XY angle to the target,
         projected into the sin/cos space we use for joints.
         (See comment on joint observation for why we do this.)
-        '''
+        """
         pos = np.asarray(pos)
         if pos.shape == (2,):
             pos = np.concatenate([pos, [0]])  # Add a zero z-coordinate
@@ -952,7 +748,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return vec
 
     def obs_vision(self):
-        ''' Return pixels from the robot camera '''
+        """ Return pixels from the robot camera """
         # Get a render context so we can
         rows, cols = self.vision_size
         width, height = cols, rows
@@ -960,9 +756,9 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return np.array(vision, dtype='float32') / 255
 
     def obs_lidar(self, positions, group):
-        '''
+        """
         Calculate and return a lidar observation.  See sub methods for implementation.
-        '''
+        """
         if self.lidar_type == 'pseudo':
             return self.obs_lidar_pseudo(positions)
         elif self.lidar_type == 'natural':
@@ -971,11 +767,11 @@ class Engine(gym.Env, gym.utils.EzPickle):
             raise ValueError(f'Invalid lidar_type {self.lidar_type}')
 
     def obs_lidar_natural(self, group):
-        '''
+        """
         Natural lidar casts rays based on the ego-frame of the robot.
         Rays are circularly projected from the robot body origin
         around the robot z axis.
-        '''
+        """
         body = self.model.body_name2id('robot')
         grp = np.asarray([i == group for i in range(int(const.NGROUP))], dtype='uint8')
         pos = np.asarray(self.world.robot_pos(), dtype='float64')
@@ -991,7 +787,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return obs
 
     def obs_lidar_pseudo(self, positions):
-        '''
+        """
         Return a robot-centric lidar observation of a list of positions.
 
         Lidar is a set of bins around the robot (divided evenly in a circle).
@@ -1010,7 +806,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
             - maximum reading is 1.0 (where the object overlaps the robot)
             - close objects occlude far objects
             - constant size observation with variable numbers of objects
-        '''
+        """
         obs = np.zeros(self.lidar_num_bins)
         for pos in positions:
             pos = np.asarray(pos)
@@ -1038,7 +834,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return obs
 
     def obs(self):
-        ''' Return the observation of our agent '''
+        """ Return the observation of our agent """
         self.sim.forward()  # Needed to get sensordata correct
         obs = {}
 
@@ -1124,7 +920,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
 
 
     def cost(self):
-        ''' Calculate the current costs and return a dict '''
+        """ Calculate the current costs and return a dict """
         self.sim.forward()  # Ensure positions and contacts are correct
         cost = {}
         # Conctacts processing
@@ -1194,7 +990,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return cost
 
     def goal_met(self):
-        ''' Return true if the current goal is met this step '''
+        """ Return true if the current goal is met this step """
         if self.task == 'goal':
             return self.dist_goal() <= self.goal_size
         if self.task == 'push':
@@ -1212,7 +1008,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         raise ValueError(f'Invalid task {self.task}')
 
     def set_mocaps(self):
-        ''' Set mocap object positions before a physics step is executed '''
+        """ Set mocap object positions before a physics step is executed """
         if self.gremlins_num: # self.constrain_gremlins:
             phase = float(self.data.time)
             for i in range(self.gremlins_num):
@@ -1222,7 +1018,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
                 self.data.set_mocap_pos(name + 'mocap', pos)
 
     def update_layout(self):
-        ''' Update layout dictionary with new places of objects '''
+        """ Update layout dictionary with new places of objects """
         self.sim.forward()
         for k in list(self.layout.keys()):
             # Mocap objects have to be handled separately
@@ -1231,11 +1027,11 @@ class Engine(gym.Env, gym.utils.EzPickle):
             self.layout[k] = self.data.get_body_xpos(k)[:2].copy()
 
     def buttons_timer_tick(self):
-        ''' Tick the buttons resampling timer '''
+        """ Tick the buttons resampling timer """
         self.buttons_timer = max(0, self.buttons_timer - 1)
 
     def step(self, action):
-        ''' Take a step and return observation, reward, done, and info '''
+        """ Take a step and return observation, reward, done, and info """
         action = np.array(action, copy=False)  # Cast to ndarray
         assert not self.done, 'Environment must be reset before stepping'
 
@@ -1304,7 +1100,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return self.obs(), reward, self.done, info
 
     def reward(self):
-        ''' Calculate the dense component of reward.  Call exactly once per step '''
+        """ Calculate the dense component of reward.  Call exactly once per step """
         reward = 0.0
         # Distance from robot to goal
         if self.task in ['goal', 'button']:
@@ -1353,7 +1149,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
         return reward
 
     def render_lidar(self, poses, color, offset, group):
-        ''' Render the lidar observation '''
+        """ Render the lidar observation """
         robot_pos = self.world.robot_pos()
         robot_mat = self.world.robot_mat()
         lidar = self.obs_lidar(poses, group)
@@ -1372,7 +1168,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
                                    label='')
 
     def render_compass(self, pose, color, offset):
-        ''' Render a compass observation '''
+        """ Render a compass observation """
         robot_pos = self.world.robot_pos()
         robot_mat = self.world.robot_mat()
         # Truncate the compass to only visualize XY component
@@ -1385,7 +1181,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
                                label='')
 
     def render_area(self, pos, size, color, label='', alpha=0.1):
-        ''' Render a radial area in the environment '''
+        """ Render a radial area in the environment """
         z_size = min(size, 0.3)
         pos = np.asarray(pos)
         if pos.shape == (2,):
@@ -1397,7 +1193,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
                                label=label if self.render_labels else '')
 
     def render_sphere(self, pos, size, color, label='', alpha=0.1):
-        ''' Render a radial area in the environment '''
+        """ Render a radial area in the environment """
         pos = np.asarray(pos)
         if pos.shape == (2,):
             pos = np.r_[pos, 0]  # Z coordinate 0
@@ -1408,7 +1204,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
                                label=label if self.render_labels else '')
 
     def render_swap_callback(self):
-        ''' Callback between mujoco render and swapping GL buffers '''
+        """ Callback between mujoco render and swapping GL buffers """
         if self.observe_vision and self.vision_render:
             self.viewer.draw_pixels(self.save_obs_vision, 0, 0)
 
@@ -1418,9 +1214,9 @@ class Engine(gym.Env, gym.utils.EzPickle):
                width=DEFAULT_WIDTH,
                height=DEFAULT_HEIGHT
                ):
-        ''' Render the environment to the screen '''
+        """ Render the environment to the screen """
 
-        if self.viewer is None or mode!=self._old_render_mode:
+        if self.viewer is None or mode != self._old_render_mode:
             # Set camera if specified
             if mode == 'human':
                 self.viewer = MjViewer(self.sim)
@@ -1429,7 +1225,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
             else:
                 self.viewer = MjRenderContextOffscreen(self.sim)
                 self.viewer._hide_overlay = True
-                self.viewer.cam.fixedcamid = camera_id #self.model.camera_name2id(mode)
+                self.viewer.cam.fixedcamid = -1 if camera_id is None else camera_id
                 self.viewer.cam.type = const.CAMERA_FIXED
             self.viewer.render_swap_callback = self.render_swap_callback
             # Turn all the geom groups on
