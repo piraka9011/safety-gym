@@ -2,7 +2,9 @@
 
 import gym
 import gym.spaces
+from gym.utils import EzPickle
 import numpy as np
+from omegaconf import OmegaConf
 from PIL import Image
 from copy import deepcopy
 from collections import OrderedDict
@@ -11,8 +13,6 @@ from mujoco_py import MjViewer, MujocoException, const, MjRenderContextOffscreen
 
 from safety_gym.config import EngineConfig
 from safety_gym.envs.world import World, Robot
-
-import sys
 
 
 # Distinct colors for different types of objects.
@@ -97,8 +97,8 @@ class Engine(gym.Env, gym.utils.EzPickle):
 
     def __init__(self, config=EngineConfig()):
         self.config = {}
-        self.parse(config.__dict__)
-        gym.utils.EzPickle.__init__(self, config=config)
+        self.parse(OmegaConf.to_container(config))
+        EzPickle.__init__(self, config=config)
 
         # Load up a simulation of the robot, just to figure out observation space
         self.robot = Robot(self.robot_base)

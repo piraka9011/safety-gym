@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 from typing import Optional
 
@@ -17,8 +17,8 @@ class EngineConfig:
     floor_display_mode: bool = False  # In display mode the visible part of the floor is cropped
 
     # Robot
-    robot_placements: List[float] = None  # Robot placements list (defaults to full extents)
-    robot_locations: List[float] = ()  # Explicitly place robot XY coordinate
+    robot_placements: Optional[List] = None  # Robot placements list (defaults to full extents)
+    robot_locations: List[float] = field(default_factory=lambda: [])  # Explicitly place robot XY coordinate
     robot_keepout: float = 0.4  # Needs to be set to match the robot XML used
     robot_base: str = 'xmls/car.xml'  # Which robot XML to use as the base
     robot_rot: Optional[float] = None  # Override robot starting angle
@@ -83,14 +83,14 @@ class EngineConfig:
     task: str = 'goal'  # goal button push x z circle or none (for screenshots)
 
     # Goal parameters
-    goal_placements: List[float] = None  # Placements where goal may appear (defaults to full extents)
-    goal_locations: List[float] = ()  # Fixed locations to override placements
+    goal_placements: Optional[List] = None  # Placements where goal may appear (defaults to full extents)
+    goal_locations: List[float] = field(default_factory=lambda: [])  # Fixed locations to override placements
     goal_keepout: float = 0.4  # Keepout radius when placing goals
     goal_size: float = 0.3  # Radius of the goal area (if using task goal)
 
     # Box parameters (only used if task == push)
-    box_placements: List[float] = None  # Box placements list (defaults to full extents)
-    box_locations: List[float] = ()  # Fixed locations to override placements
+    box_placements: Optional[List] = None  # Box placements list (defaults to full extents)
+    box_locations: List[float] = field(default_factory=lambda: [])  # Fixed locations to override placements
     box_keepout: float = 0.2  # Box keepout radius for placement
     box_size: float = 0.2  # Box half-radius size
     box_density: float = 0.001  # Box density
@@ -114,8 +114,8 @@ class EngineConfig:
 
     # Buttons are small immovable spheres to the environment
     buttons_num: int = 0  # Number of buttons to add
-    buttons_placements: List[float] = None  # Buttons placements list (defaults to full extents)
-    buttons_locations: List[float] = ()  # Fixed locations to override placements
+    buttons_placements: Optional[List] = None  # Buttons placements list (defaults to full extents)
+    buttons_locations: List[float] = field(default_factory=lambda: [])  # Fixed locations to override placements
     buttons_keepout: float = 0.3  # Buttons keepout radius for placement
     buttons_size: float = 0.1  # Size of buttons in the scene
     buttons_cost: float = 1.0  # Cost for pressing the wrong button if constrain_buttons
@@ -134,8 +134,8 @@ class EngineConfig:
     # Walls - barriers in the environment not associated with any constraint
     # NOTE: this is probably best to be auto-generated than manually specified
     walls_num: int = 0  # Number of walls
-    walls_placements: List[float] = None  # This should not be used
-    walls_locations: List[float] = ()  # This should be used and length == walls_num
+    walls_placements: Optional[List] = None  # This should not be used
+    walls_locations: List[float] = field(default_factory=lambda: [])  # This should be used and length == walls_num
     walls_keepout: float = 0.0  # This should not be used
     walls_size: float = 0.5  # Should be fixed at fundamental size of the world
 
@@ -150,16 +150,16 @@ class EngineConfig:
 
     # Hazardous areas
     hazards_num: int = 0  # Number of hazards in an environment
-    hazards_placements: List[float] = None  # Placements list for hazards (defaults to full extents)
-    hazards_locations: List[float] = ()  # Fixed locations to override placements
+    hazards_placements: Optional[List] = None  # Placements list for hazards (defaults to full extents)
+    hazards_locations: List[float] = field(default_factory=lambda: [])  # Fixed locations to override placements
     hazards_keepout: float = 0.4  # Radius of hazard keepout for placement
     hazards_size: float = 0.3  # Radius of hazards
     hazards_cost: float = 1.0  # Cost (per step) for violating the constraint
 
     # Vases (objects we should not touch)
     vases_num: int = 0  # Number of vases in the world
-    vases_placements: List[float] = None  # Vases placements list (defaults to full extents)
-    vases_locations: List[float] = ()  # Fixed locations to override placements
+    vases_placements: Optional[List] = None  # Vases placements list (defaults to full extents)
+    vases_locations: List[float] = field(default_factory=lambda: [])  # Fixed locations to override placements
     vases_keepout: float = 0.15  # Radius of vases keepout for placement
     vases_size: float = 0.1  # Half-size (radius) of vase object
     vases_density: float = 0.001  # Density of vases
@@ -176,8 +176,8 @@ class EngineConfig:
 
     # Pillars (immovable obstacles we should not touch)
     pillars_num: int = 0  # Number of pillars in the world
-    pillars_placements: List[float] = None  # Pillars placements list (defaults to full extents)
-    pillars_locations: List[float] = ()  # Fixed locations to override placements
+    pillars_placements: Optional[List] = None  # Pillars placements list (defaults to full extents)
+    pillars_locations: List[float] = field(default_factory=lambda: [])  # Fixed locations to override placements
     pillars_keepout: float = 0.3  # Radius for placement of pillars
     pillars_size: float = 0.2  # Half-size (radius) of pillar objects
     pillars_height: float = 0.5  # Half-height of pillars geoms
@@ -185,8 +185,8 @@ class EngineConfig:
 
     # Gremlins (moving objects we should avoid)
     gremlins_num: int = 0  # Number of gremlins in the world
-    gremlins_placements: List[float] = None  # Gremlins placements list (defaults to full extents)
-    gremlins_locations: List[float] = ()  # Fixed locations to override placements
+    gremlins_placements: Optional[List] = None  # Gremlins placements list (defaults to full extents)
+    gremlins_locations: List[float] = field(default_factory=lambda: [])  # Fixed locations to override placements
     gremlins_keepout: float = 0.5  # Radius for keeping out (contains gremlin path)
     gremlins_travel: float = 0.3  # Radius of the circle traveled in
     gremlins_size: float = 0.1  # Half-size (radius) of gremlin objects
